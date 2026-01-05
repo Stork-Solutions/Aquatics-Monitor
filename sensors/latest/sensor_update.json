@@ -4,7 +4,7 @@
     "files": {
       "main.py": {
         "url": "https://raw.githubusercontent.com/YOUR-USERNAME/Aquatics-Monitor/main/sensors/latest/LEVELTEMP-A/main.py",
-        "sha256": "REPLACE_ME"
+        "sha256": "2971F5CAF8E26B08546BB274F5B40231ABD5104982171E6B2852FDB447629DFF"
       }
     }
   },
@@ -13,7 +13,7 @@
     "files": {
       "main.py": {
         "url": "https://raw.githubusercontent.com/YOUR-USERNAME/Aquatics-Monitor/main/sensors/latest/PH-D/main.py",
-        "sha256": "REPLACE_ME"
+        "sha256": "2AC588323C8AC71BE3A5485C3E6253CC6401485DDBF66975D11BB11142FADB56"
       }
     }
   },
@@ -22,7 +22,7 @@
     "files": {
       "main.py": {
         "url": "https://raw.githubusercontent.com/YOUR-USERNAME/Aquatics-Monitor/main/sensors/latest/TDS-E/main.py",
-        "sha256": "REPLACE_ME"
+        "sha256": "BC6298B945F026698E58544B21F38FF2F37687DB69EDBC764EEDC2039F70EC1A"
       }
     }
   }
