@@ -1,1 +1,13 @@
-
+{
+  "product": "SAM-Max",
+  "channel": "stable",
+  "latest_version": "1.4.1",
+  "files": {
+    "SAM-Max.py": {
+      "url": "https://raw.githubusercontent.com/YOUR-USERNAME/Aquatics-Monitor/main/gui/latest/SAM-Max.py",
+      "sha256": "6CFDB8C596220B7D79671327D46F4018C37576989E2B2EBC1EFD780E69BF7199"
+    }
+  },
+  "min_supported_version": "1.4.0",
+  "notes": "GUI update pack"
+}
