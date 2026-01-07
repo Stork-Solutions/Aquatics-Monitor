@@ -1,13 +1,60 @@
 {
-  "LEVELTEMP-A": {
+  "LEVELTEMP-A-MPM288DI": {
     "latest_version": "2.0.0",
     "files": {
       "main.py": {
-        "url": "https://raw.githubusercontent.com/YOUR-USERNAME/Aquatics-Monitor/main/sensors/latest/LEVELTEMP-A/main.py",
-        "sha256": "2971F5CAF8E26B08546BB274F5B40231ABD5104982171E6B2852FDB447629DFF"
+        "url": "https://raw.githubusercontent.com/YOUR-USERNAME/Aquatics-Monitor/main/sensors/latest/LEVELTEMP-MPM288DI/A/main.py",
+        "sha256": "C30A5D5B8593C51A8495E3061302B5A0E768A616A1B8E4E3F519D102D565CB29"
       }
     }
   },
+  "LEVELTEMP-B-MPM288DI": {
+    "latest_version": "2.0.0",
+    "files": {
+      "main.py": {
+        "url": "https://raw.githubusercontent.com/YOUR-USERNAME/Aquatics-Monitor/main/sensors/latest/LEVELTEMP-MPM288DI/B/main.py",
+        "sha256": "D6FDC0035BB7971C52BCA95B0ED9C970ED6EBDC8C183FC08555B4B50AA21EE40"
+      }
+    }
+  },
+  "LEVELTEMP-C-MPM288DI": {
+    "latest_version": "2.0.0",
+    "files": {
+      "main.py": {
+        "url": "https://raw.githubusercontent.com/YOUR-USERNAME/Aquatics-Monitor/main/sensors/latest/LEVELTEMP-MPM288DI/C/main.py",
+        "sha256": "F073BEA92D745F09DBE4798AA8A2634E5999EA08079C00289953BCE6FBE98DDD"
+      }
+    }
+  },
+
+  "LEVELTEMP-A-ME782": {
+    "latest_version": "2.0.0",
+    "files": {
+      "main.py": {
+        "url": "https://raw.githubusercontent.com/YOUR-USERNAME/Aquatics-Monitor/main/sensors/latest/LEVELTEMP-ME782/A/main.py",
+        "sha256": "7E14DFF9E2B4AB1C453DE8FEC0BABA716D16556B04E0E5ED359A3BB3E5675189"
+      }
+    }
+  },
+  "LEVELTEMP-B-ME782": {
+    "latest_version": "2.0.0",
+    "files": {
+      "main.py": {
+        "url": "https://raw.githubusercontent.com/YOUR-USERNAME/Aquatics-Monitor/main/sensors/latest/LEVELTEMP-ME782/B/main.py",
+        "sha256": "FB215985D1CC62AB2F06F8492486F419B50240C053F122D929FE8078B8253023"
+      }
+    }
+  },
+  "LEVELTEMP-C-ME782": {
+    "latest_version": "2.0.0",
+    "files": {
+      "main.py": {
+        "url": "https://raw.githubusercontent.com/YOUR-USERNAME/Aquatics-Monitor/main/sensors/latest/LEVELTEMP-ME782/C/main.py",
+        "sha256": "707362B1EA954EAE9AD7DAC0BD4552B42EC90F7C3EE4EDF0E0D202F99040B6F7"
+      }
+    }
+  },
+
   "PH-D": {
     "latest_version": "2.0.0",
     "files": {
@@ -17,6 +64,7 @@
       }
     }
   },
+
   "TDS-E": {
     "latest_version": "2.0.0",
     "files": {
