@@ -60,7 +60,7 @@
     "files": {
       "main.py": {
         "url": "https://raw.githubusercontent.com/YOUR-USERNAME/Aquatics-Monitor/main/sensors/latest/PH-D/main.py",
-        "sha256": "2AC588323C8AC71BE3A5485C3E6253CC6401485DDBF66975D11BB11142FADB56"
+        "sha256": "F84B498DD28F6AE9D15A60904DAB08A93852875A17647F2DE7D38695CEF1ABAC"
       }
     }
   },
@@ -70,7 +70,7 @@
     "files": {
       "main.py": {
         "url": "https://raw.githubusercontent.com/YOUR-USERNAME/Aquatics-Monitor/main/sensors/latest/TDS-E/main.py",
-        "sha256": "BC6298B945F026698E58544B21F38FF2F37687DB69EDBC764EEDC2039F70EC1A"
+        "sha256": "A7F31F9A18517066481214487215666575BE1720FB2C9DA76F4BA608E092307F"
       }
     }
   }
