@@ -5,7 +5,7 @@
   "files": {
     "SAM-Max.py": {
       "url": "https://raw.githubusercontent.com/Stork-Solutions/Aquatics-Monitor/main/gui/latest/SAM-Max.py",
-      "sha256": "C68A291095C710760BA41E9B13C315BD486A5C3C024BDB0B4F9FA1379C5271A6"
+      "sha256": "2B97FE5C39DDC1831525D3B7BDE9B0854D9D6E1A4A4223DB86074B0A67A52717"
     }
   },
   "min_supported_version": "1.4.0",
