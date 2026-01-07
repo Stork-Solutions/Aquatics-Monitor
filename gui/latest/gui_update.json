@@ -1,7 +1,7 @@
 {
   "product": "SAM-Max",
   "channel": "stable",
-  "latest_version": "1.4.1",
+  "latest_version": "1.4.0",
   "files": {
     "SAM-Max.py": {
       "url": "https://raw.githubusercontent.com/Stork-Solutions/Aquatics-Monitor/main/gui/latest/SAM-Max.py",
