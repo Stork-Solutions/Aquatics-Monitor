@@ -23,7 +23,7 @@ import hashlib
 import urllib.request
 import urllib.error
 
-__version__ = "1.4.0"
+__version__ = "1.4.1"
 GUI_MANIFEST_URL = "https://raw.githubusercontent.com/Stork-Solutions/Aquatics-Monitor/main/gui/latest/gui_update.json"
 
 class TransportTCP:
@@ -58,7 +58,7 @@ class TransportSerial:
     def write(self, s: str): self.ser.write(s.encode())
     def readline(self) -> str: return self.ser.readline().decode().strip()
     @property
-    def is_open(self):  # for UI checks if you still need them
+    def is_open(self): 
         try: return self.ser.is_open
         except: return True
     def close(self):
@@ -68,24 +68,70 @@ class TransportSerial:
 class SensorGUI:
     def __init__(self, root):
         self.root = root
+        # Use an absolute settings path so saved options persist regardless of the launch working directory
+        # (fixes cases where settings appear to "not load" until re-submitted).
+        self._base_dir = os.path.dirname(os.path.abspath(__file__))
+        self._settings_path = os.path.join(self._base_dir, "settings.json")
         # GUI Setup
-        self.root.title("Stork Aquatics Monitor Max V1.4.0")
+        self.root.title("Stork Aquatics Monitor Max V1.4.1")
         try:
             screen_h = self.root.winfo_screenheight()
         except Exception:
             screen_h = 800
 
+        
+        # --- Screen profile (persisted in settings.json) ---
+        # Supported deployments: 4.3", 5", 10.1"
+        # If settings.json already contains "screen_profile", we honor it.
+        # Otherwise we infer a sensible default from the physical screen resolution.
+        def _detect_screen_profile(w: int, h: int) -> str:
+            # Common Raspberry Pi touch resolutions:
+            # 4.3" ~ 480x272
+            # 5"   ~ 800x480
+            # 10.1"~ 1280x800 (or similar)
+            if (w <= 520 and h <= 320) or (h <= 320 and w <= 520):
+                return "4.3"
+            if (w <= 900 and h <= 600) or (h <= 600 and w <= 900):
+                return "5"
+            return "10.1"
+
+        # Read saved profile early (before we compute scale / fonts)
+        self.screen_profile = None
+        try:
+            if os.path.exists(self._settings_path):
+                with open(self._settings_path, "r") as _f:
+                    _data = json.load(_f)
+                    self.screen_profile = _data.get("screen_profile")
+        except Exception:
+            self.screen_profile = None
+
+        try:
+            screen_w = self.root.winfo_screenwidth()
+        except Exception:
+            screen_w = 1280
+
+        if self.screen_profile not in ("4.3", "5", "10.1"):
+            self.screen_profile = _detect_screen_profile(screen_w, screen_h)
+
+        self.SCREEN_PROFILES = {
+            "4.3": {"columns": 1, "outer_pad": 4,  "pady": 6, "scale": 0.85, "force_fullscreen": True},
+            "5":   {"columns": 2, "outer_pad": 6,  "pady": 8, "scale": 1.00, "force_fullscreen": True},
+            "10.1":{"columns": 3, "outer_pad": 10, "pady": 10,"scale": 1.25, "force_fullscreen": True},
+        }
+        self.profile = self.SCREEN_PROFILES[self.screen_profile]
+        # ---------------------------------------------------
+
         # Clamp to avoid extremes
-        self.scale = max(0.7, min(1.6, screen_h / 800.0))
+        self.scale = max(0.7, min(1.6, float(self.profile.get("scale", 1.0))))
 
         def _s(size: int) -> int:
-            # helper for scaled font sizes / padding
+            # Helper for scaled font sizes / padding
             return max(8, int(size * self.scale))
 
         self._s = _s
 
         self._tds_last_visibility = None   # cache tuple: (show_tds, show_uScm, show_sal)
-        # --- Optional per-frame visibility (set to False to hide a frame) ---
+        # Optional per-frame visibility (set to False to hide a frame)
         # Defaults keep everything visible. To show only Aquarium A and RO Pump A:
         # self.frame_visibility.update({"Aquarium B": False, "RO Tank": False, "pH Sensor": False, "RO Pump B": False})
         self.frame_visibility = {
@@ -99,7 +145,7 @@ class SensorGUI:
             "RPi Image": True,
             "www.stork.solutions": True,
         }
-        # --- Sensor firmware versions (populated later by sensor firmware; default UNKNOWN) ---
+        # Sensor firmware versions (populated later by sensor firmware; default UNKNOWN) ---
         try:
             sensor_ids = list(getattr(self, "sensors", {}).keys())
         except Exception:
@@ -112,6 +158,14 @@ class SensorGUI:
         self.sensor_firmware = {sid: "UNKNOWN" for sid in sensor_ids}
 
         self.fullscreen = True  # Track fullscreen on or off
+
+        # Apply fullscreen deterministically (prevents "partial/blank first paint" on some WMs)
+        if self.profile.get("force_fullscreen", False):
+            try:
+                self.root.attributes("-fullscreen", True)
+                self.fullscreen = True
+            except Exception:
+                pass
         self.root.bind("<Double-Button-1>", self.toggle_fullscreen)
         self.root.bind("<F11>", self.toggle_fullscreen)
         self.root.bind("<Escape>", self.exit_fullscreen)
@@ -302,7 +356,7 @@ class SensorGUI:
             "RPi Image":  {"row": 2, "col": 1, "colspan": 1},
             "www.stork.solutions": {"row": 2, "col": 2, "colspan": 1},
         }
-        self.use_frame_positions = True
+        self.use_frame_positions = False
  
         # Main Grid Layout (position-driven)
         p = self.frame_positions
@@ -317,9 +371,16 @@ class SensorGUI:
         self.image_frame_b     = self.create_image_frame_b("", p["RPi Image"]["row"], p["RPi Image"]["col"], colspan=p["RPi Image"].get("colspan", 1))
         self.image_frame_c     = self.create_image_frame_c("www.stork.solutions", p["www.stork.solutions"]["row"], p["www.stork.solutions"]["col"], colspan=p["www.stork.solutions"].get("colspan", 1))
 
-        # Apply optional visibility toggles
-        self.apply_frame_visibility()
+        # Load saved settings BEFORE applying visibility/layout
         self.load_threshold_settings()
+        # Apply frame visibility/layout now, and again shortly after the window manager finalises geometry.
+        self.apply_frame_visibility()
+        try:
+            self.root.after(50, self.apply_frame_visibility)
+            self.root.after(200, self.apply_frame_visibility)
+        except Exception:
+            pass
+
         self.apply_theme(self.root)
         self.apply_reading_colors()
         self.connect_to_sensors()
@@ -345,7 +406,8 @@ class SensorGUI:
         btns.pack(anchor="e", pady=(14, 0))
         def _ok(): choice["ok"] = True; popup.destroy()
         def _no(): popup.destroy()
-        tk.Button(btns, text=no_text, command=_no, width=10).pack(side="right", padx=(8, 0))
+        if no_text:
+            tk.Button(btns, text=no_text, command=_no, width=10).pack(side="right", padx=(8, 0))
         tk.Button(btns, text=yes_text, command=_ok, width=12).pack(side="right")
 
         # Apply your existing theme to THIS popup
@@ -367,6 +429,27 @@ class SensorGUI:
         popup.bind("<Escape>", lambda e: _no())
         popup.wait_window()
         return choice["ok"]
+
+    def show_info(self, title, message, ok_text="OK"):
+        """Themed informational popup (dark-mode aware)."""
+        return self.show_confirm(title, message, yes_text=ok_text, no_text="")
+
+    def show_error(self, title, message, ok_text="OK"):
+        """Themed error popup (dark-mode aware)."""
+        return self.show_confirm(title, message, yes_text=ok_text, no_text="")
+
+    def ui_call_blocking(self, fn):
+        """Run a callable on the Tk UI thread and wait for its return value."""
+        evt = threading.Event()
+        box = {"result": None}
+        def _run():
+            try:
+                box["result"] = fn()
+            finally:
+                evt.set()
+        self.root.after(0, _run)
+        evt.wait()
+        return box["result"]
     
     def tared_mmwg(self, sensor_id: str, raw_mmwg: float) -> float:
         """Return reading minus per-sensor tare offset (mmWG)."""
@@ -455,17 +538,21 @@ class SensorGUI:
         """
         available, latest, url, expect_sha, err = self.check_gui_update()
         if err:
-            self.root.after(0, lambda: messagebox.showerror("Update", err))
+            self.root.after(0, lambda: self.show_error("Update", err))
             return
 
         if not available:
             msg = f"No update available.\nCurrent: {__version__}\nLatest: {latest or __version__}"
-            self.root.after(0, lambda: messagebox.showinfo("Update", msg))
+            self.root.after(0, lambda: self.show_info("Update", msg))
             return
 
         # Confirm with user
-        ok = messagebox.askyesno("Update available",
-                                f"Update available: {latest}\nCurrent: {__version__}\n\nInstall now?")
+        ok = self.ui_call_blocking(lambda: self.show_confirm(
+            "Update available",
+            f"Update available: {latest}\nCurrent: {__version__}\n\nInstall now?",
+            yes_text="Install",
+            no_text="Cancel",
+        ))
         if not ok:
             return
 
@@ -474,7 +561,7 @@ class SensorGUI:
             got_sha = self._sha256_hex(data)
 
             if expect_sha and got_sha != expect_sha.lower():
-                self.root.after(0, lambda: messagebox.showerror(
+                self.root.after(0, lambda: self.show_error(
                     "Update",
                     "SHA256 mismatch – update aborted.\n\n"
                     f"Expected: {expect_sha}\nGot:      {got_sha}"
@@ -501,17 +588,14 @@ class SensorGUI:
             # Atomic replace
             os.replace(new_path, current_path)
 
-            self.root.after(0, lambda: messagebox.showinfo(
-                "Update",
-                f"Updated to {latest}. Restarting now…"
-            ))
+            self.root.after(0, lambda: self.show_info("Update", f"Updated to {latest}. Restarting now…"))
 
             # Restart process
             python = sys.executable or "python3"
             os.execv(python, [python] + sys.argv)
 
         except Exception as e:
-            self.root.after(0, lambda: messagebox.showerror("Update", f"Update failed: {e}"))
+            self.root.after(0, lambda: self.show_error("Update", f"Update failed: {e}"))
 
     def ui_check_gui_update(self):
         # Run update check/apply in background so Tkinter doesn't freeze
@@ -519,8 +603,8 @@ class SensorGUI:
 
     # Start to build frames  
     def create_sensor_frame(self, title, row, column, colspan=1):
-        frame = tk.LabelFrame(self.root, text=title, font=("Arial", 16, "bold"), padx=10, pady=10)
-        frame.grid(row=row, column=column, padx=10, pady=10, sticky="nsew", columnspan=colspan)
+        frame = tk.LabelFrame(self.root, text=title, font=("Arial", 16, "bold"), padx=int(getattr(self, "profile", {}).get("outer_pad", 10)), pady=10)
+        frame.grid(row=row, column=column, padx=int(getattr(self, "profile", {}).get("outer_pad", 10)), pady=int(getattr(self, "profile", {}).get("pady", 10)), sticky="nsew", columnspan=colspan)
 
         # Connection Status
         connection_status_label = tk.Label(frame, text="Status:", font=("Arial", 14, "bold"), fg="black")
@@ -545,8 +629,8 @@ class SensorGUI:
         }
 
     def create_ro_tank_frame(self, title, row, column, colspan=1):
-        frame = tk.LabelFrame(self.root, text=title, font=("Arial", 16, "bold"), padx=10, pady=10)
-        frame.grid(row=row, column=column, padx=10, pady=10, sticky="nsew", columnspan=colspan)
+        frame = tk.LabelFrame(self.root, text=title, font=("Arial", 16, "bold"), padx=int(getattr(self, "profile", {}).get("outer_pad", 10)), pady=10)
+        frame.grid(row=row, column=column, padx=int(getattr(self, "profile", {}).get("outer_pad", 10)), pady=int(getattr(self, "profile", {}).get("pady", 10)), sticky="nsew", columnspan=colspan)
 
         # Connection Status
         connection_status_label = tk.Label(frame, text="Status:", font=("Arial", 14, "bold"), fg="black")
@@ -575,8 +659,8 @@ class SensorGUI:
         }
    
     def create_ph_level_frame(self, title, row, column, colspan=1):
-        frame = tk.LabelFrame(self.root, text=title, font=("Arial", 16, "bold"), padx=10, pady=10)
-        frame.grid(row=row, column=column, padx=10, pady=10, sticky="nsew", columnspan=colspan)
+        frame = tk.LabelFrame(self.root, text=title, font=("Arial", 16, "bold"), padx=int(getattr(self, "profile", {}).get("outer_pad", 10)), pady=10)
+        frame.grid(row=row, column=column, padx=int(getattr(self, "profile", {}).get("outer_pad", 10)), pady=int(getattr(self, "profile", {}).get("pady", 10)), sticky="nsew", columnspan=colspan)
 
         # Connection Status
         connection_status_label = tk.Label(frame, text="Status:", font=("Arial", 14, "bold"), fg="black")
@@ -601,8 +685,8 @@ class SensorGUI:
         }
 
     def create_pump_frame(self, title, row, column):
-        frame = tk.LabelFrame(self.root, text=title, font=("Arial", 16, "bold"), padx=10, pady=10)
-        frame.grid(row=row, column=column, padx=10, pady=10, sticky="nsew")
+        frame = tk.LabelFrame(self.root, text=title, font=("Arial", 16, "bold"), padx=int(getattr(self, "profile", {}).get("outer_pad", 10)), pady=10)
+        frame.grid(row=row, column=column, padx=int(getattr(self, "profile", {}).get("outer_pad", 10)), pady=int(getattr(self, "profile", {}).get("pady", 10)), sticky="nsew")
 
         # Pump Status
         pump_status = tk.Label(frame, text="OFF", font=("Arial", 14, "bold"), fg="red")
@@ -637,25 +721,27 @@ class SensorGUI:
         }
     def apply_frame_visibility(self):
         """Show/hide top-level frames based on self.frame_visibility.
-        Uses grid_remove() to keep layout state for quick re-enable."""
-        mapping = {}
-        try:
-            mapping.update({
-                "Aquarium A": self.aquarium_frame_1["frame"],
-                "Aquarium B": self.aquarium_frame_2["frame"],
-                "RO Tank": self.ro_tank_frame["frame"],
-                "pH Sensor": self.ph_level_frame["frame"],
-                "TDS Sensor": self.tds_level_frame["frame"],
-                "RO Pump A": self.pump_frame_a["frame"],
-                "RO Pump B": self.pump_frame_b["frame"],
-                "RPi Image": self.image_frame_b["frame"],
-                "www.stork.solutions": self.image_frame_c["frame"],
-            })
-        except Exception:
-            # If not yet created, skip
-            return
+        Uses grid_remove() to keep layout state for quick re-enable.
+
+        Important: Do NOT bail out if any single frame isn't created yet.
+        We apply visibility to whatever frames currently exist, then reflow.
+        """
+        mapping = {
+            "Aquarium A": getattr(self, "aquarium_frame_1", {}).get("frame"),
+            "Aquarium B": getattr(self, "aquarium_frame_2", {}).get("frame"),
+            "RO Tank": getattr(self, "ro_tank_frame", {}).get("frame"),
+            "pH Sensor": getattr(self, "ph_level_frame", {}).get("frame"),
+            "TDS Sensor": getattr(self, "tds_level_frame", {}).get("frame"),
+            "RO Pump A": getattr(self, "pump_frame_a", {}).get("frame"),
+            "RO Pump B": getattr(self, "pump_frame_b", {}).get("frame"),
+            "RPi Image": getattr(self, "image_frame_b", {}).get("frame"),
+            "www.stork.solutions": getattr(self, "image_frame_c", {}).get("frame"),
+        }
+
         for name, frame in mapping.items():
-            show = self.frame_visibility.get(name, True)
+            if frame is None:
+                continue
+            show = bool(self.frame_visibility.get(name, True))
             try:
                 if show:
                     frame.grid()
@@ -663,13 +749,19 @@ class SensorGUI:
                     frame.grid_remove()
             except Exception:
                 pass
-            
-        if getattr(self, "use_frame_positions", False):
-            self.apply_frame_positions_layout()
-        else:
-            self.reflow_grid()
+
+        # Always use reflow layout (prevents gaps when frames are disabled)
+        try:
+            self.reflow_grid(max_cols=int(getattr(self, "profile", {}).get("columns", 3)))
+        except Exception:
+            try:
+                self.reflow_grid()
+            except Exception:
+                pass
+
+
       
-    def reflow_grid(self):
+    def reflow_grid(self, max_cols=None):
         """
         Auto-arranges visible frames into full-width rows that stretch when fullscreen.
         Frames fill available space and never clip.
@@ -706,9 +798,10 @@ class SensorGUI:
         ]:
             if self.frame_visibility.get(name, True):
                 visible_frames.append(frame)
-
-        # Lay them out in full-width rows, 1 to 3 per row
-        max_cols = 3
+        # Lay them out in rows (columns set by screen profile)
+        if max_cols is None:
+            max_cols = int(getattr(self, "profile", {}).get("columns", 3))
+        max_cols = max(1, min(3, int(max_cols)))
         row = 0
         col = 0
 
@@ -720,8 +813,8 @@ class SensorGUI:
             frame.grid(
                 row=row,
                 column=col,
-                padx=10,
-                pady=10,
+                padx=int(getattr(self, "profile", {}).get("outer_pad", 10)),
+                pady=int(getattr(self, "profile", {}).get("pady", 10)),
                 sticky="nsew"
             )
 
@@ -786,7 +879,7 @@ class SensorGUI:
             cs = int(pos.get("colspan", 1))
 
             try:
-                fr.grid(row=r, column=c, columnspan=cs, padx=10, pady=10, sticky="nsew")
+                fr.grid(row=r, column=c, columnspan=cs, padx=int(getattr(self, "profile", {}).get("outer_pad", 10)), pady=int(getattr(self, "profile", {}).get("pady", 10)), sticky="nsew")
             except Exception:
                 pass
 
@@ -978,8 +1071,8 @@ class SensorGUI:
         self.stop_flashing(pump_name)
         
     def create_tds_level_frame(self, title, row, column, colspan=1):
-        frame = tk.LabelFrame(self.root, text=title, font=("Arial", 16, "bold"), padx=10, pady=10)
-        frame.grid(row=row, column=column, padx=10, pady=10, sticky="nsew", columnspan=colspan)
+        frame = tk.LabelFrame(self.root, text=title, font=("Arial", 16, "bold"), padx=int(getattr(self, "profile", {}).get("outer_pad", 10)), pady=10)
+        frame.grid(row=row, column=column, padx=int(getattr(self, "profile", {}).get("outer_pad", 10)), pady=int(getattr(self, "profile", {}).get("pady", 10)), sticky="nsew", columnspan=colspan)
 
         # Connection Status
         connection_status_label = tk.Label(frame, text="Status:", font=("Arial", 14, "bold"))
@@ -1013,8 +1106,8 @@ class SensorGUI:
         }
 
     def create_image_frame_b(self, title, row, column, colspan=1):
-        frame = tk.LabelFrame(self.root, text=title or "", font=("Arial", 16, "bold"), padx=10, pady=10)
-        frame.grid(row=row, column=column, padx=10, pady=10, sticky="nsew", columnspan=colspan)
+        frame = tk.LabelFrame(self.root, text=title or "", font=("Arial", 16, "bold"), padx=int(getattr(self, "profile", {}).get("outer_pad", 10)), pady=10)
+        frame.grid(row=row, column=column, padx=int(getattr(self, "profile", {}).get("outer_pad", 10)), pady=int(getattr(self, "profile", {}).get("pady", 10)), sticky="nsew", columnspan=colspan)
 
         # Fixed fit 
         max_w, max_h = 350, 200
@@ -1028,7 +1121,7 @@ class SensorGUI:
 
             if img_path.exists():
                 original = tk.PhotoImage(file=str(img_path))
-                # integer downscale to fit within max_w x max_h while preserving aspect
+                # Integer downscale to fit within max_w x max_h while preserving aspect
                 w, h = original.width(), original.height()
                 factor_w = max(1, (w + max_w - 1) // max_w)
                 factor_h = max(1, (h + max_h - 1) // max_h)
@@ -1036,7 +1129,7 @@ class SensorGUI:
                 scaled = original.subsample(factor, factor) if factor > 1 else original
 
                 img_label = tk.Label(frame, image=scaled)
-                img_label.image = scaled  # keep a reference
+                img_label.image = scaled  # Keep a reference
                 img_label.pack(expand=True, anchor="center")
                 return {"frame": frame, "image_label": img_label}
             else:
@@ -1047,8 +1140,8 @@ class SensorGUI:
         return {"frame": frame}
 
     def create_image_frame_c(self, title, row, column, colspan=1):
-        frame = tk.LabelFrame(self.root, text=title or "", font=("Arial", 16, "bold"), padx=10, pady=10)
-        frame.grid(row=row, column=column, padx=10, pady=10, sticky="nsew", columnspan=colspan)
+        frame = tk.LabelFrame(self.root, text=title or "", font=("Arial", 16, "bold"), padx=int(getattr(self, "profile", {}).get("outer_pad", 10)), pady=10)
+        frame.grid(row=row, column=column, padx=int(getattr(self, "profile", {}).get("outer_pad", 10)), pady=int(getattr(self, "profile", {}).get("pady", 10)), sticky="nsew", columnspan=colspan)
 
         # Fixed fit 
         max_w, max_h = 350, 200
@@ -1062,7 +1155,7 @@ class SensorGUI:
 
             if img_path.exists():
                 original = tk.PhotoImage(file=str(img_path))
-                # integer downscale to fit within max_w x max_h while preserving aspect
+                # Integer downscale to fit within max_w x max_h while preserving aspect
                 w, h = original.width(), original.height()
                 factor_w = max(1, (w + max_w - 1) // max_w)
                 factor_h = max(1, (h + max_h - 1) // max_h)
@@ -1144,7 +1237,7 @@ class SensorGUI:
 
         ep = getattr(self, "endpoints", {}).get(sensor_id, {"type": "serial", "host": "", "port": 8888})
         conn_type_var = tk.StringVar(value=ep.get("type", "serial"))
-        ip_var = tk.StringVar(value=ep.get("host", ""))  # fixed port 8888
+        ip_var = tk.StringVar(value=ep.get("host", ""))  # Fixed port 8888
 
         def toggle_ip_state(*_):
             state = tk.NORMAL if conn_type_var.get() == "tcp" else tk.DISABLED
@@ -1330,9 +1423,10 @@ class SensorGUI:
     # Main settings save
     def save_threshold_settings(self):
         try:
-            with open("settings.json", "w") as f:
+            with open(self._settings_path, "w") as f:
                 json.dump({
                     "thresholds": self.thresholds,
+                    "screen_profile": getattr(self, "screen_profile", "4.3"),
                     "display_units": self.display_units,
                     #"graphics_settings": getattr(self, "graphics_settings", {})
                     "visual_settings": self.visual_settings,
@@ -1351,8 +1445,8 @@ class SensorGUI:
     # Main settings loading      
     def load_threshold_settings(self):
         try:
-            if os.path.exists("settings.json"):
-                with open("settings.json", "r") as f:
+            if os.path.exists(self._settings_path):
+                with open(self._settings_path, "r") as f:
                     data = json.load(f)
                     self.thresholds.update(data.get("thresholds", {}))
                     self.display_units.update(data.get("display_units", {}))
@@ -1362,6 +1456,10 @@ class SensorGUI:
                     self.tare_offsets.update(data.get("tare_offsets", {"A":0.0, "B":0.0, "C":0.0}))
                     self.frame_positions.update(data.get("frame_positions", {}))
                     self.use_frame_positions = data.get("use_frame_positions", True)
+                    self.screen_profile = data.get("screen_profile", getattr(self, "screen_profile", "4.3"))
+                    if hasattr(self, "SCREEN_PROFILES") and self.screen_profile in self.SCREEN_PROFILES:
+                        self.profile = self.SCREEN_PROFILES[self.screen_profile]
+                        self.scale = max(0.7, min(1.6, float(self.profile.get("scale", 1.0))))
                     self.frame_visibility.update(data.get("frame_visibility", {}))
                     self.graphics_settings = data.get("graphics_settings", {
                         "dark_mode": False,
@@ -1448,7 +1546,7 @@ class SensorGUI:
 
         ep = getattr(self, "endpoints", {}).get(sensor_id, {"type": "serial", "host": "", "port": 8888})
         conn_type_var = tk.StringVar(value=ep.get("type", "serial"))
-        ip_var = tk.StringVar(value=ep.get("host", ""))  # fixed port 8888
+        ip_var = tk.StringVar(value=ep.get("host", ""))  # Fixed port 8888
 
         def toggle_ip_state(*_):
             state = tk.NORMAL if conn_type_var.get() == "tcp" else tk.DISABLED
@@ -1514,14 +1612,14 @@ class SensorGUI:
 
         def save_ro_alarm_settings():
             try:
-                # persist connection choice (fixed 8888)
+                # Persist connection choice (fixed 8888)
                 ct = conn_type_var.get()
                 host = ip_var.get().strip()
                 if ct == "tcp" and not host:
                     raise ValueError("Please enter an IP address for Wi-Fi TCP.")
                 self.endpoints[sensor_id] = {"type": ct, "host": host, "port": 8888}
 
-                # existing RO settings save
+                # RO settings save
                 display_unit["level_alarm"] = level_alarm_var.get()
                 display_unit["use_liters"] = use_liters_var.get()
                 display_unit["use_gallons"] = use_gallons_var.get()
@@ -1536,7 +1634,7 @@ class SensorGUI:
                     else:
                         if temp_lbl.winfo_ismapped():
                             temp_lbl.pack_forget()
-                        temp_lbl.config(text="Temperature: --")  # reset text when hidden
+                        temp_lbl.config(text="Temperature: --")  # Reset text when hidden
 
                 if use_liters_var.get() or use_gallons_var.get():
                     width = float(width_var.get()); depth = float(depth_var.get())
@@ -1657,7 +1755,7 @@ class SensorGUI:
 
         toggle_ip_state()
 
-        # Existing pH settings
+        # pH settings
         settings = self.display_units.get(sensor_id, {})
         use_fahrenheit_var = tk.BooleanVar(value=settings.get("use_fahrenheit", False))
         tk.Checkbutton(container, text="Show Temperature in °F", variable=use_fahrenheit_var).pack(pady=5)
@@ -1681,14 +1779,14 @@ class SensorGUI:
 
         def save_ph_settings():
             try:
-                # persist connection choice (fixed 8888)
+                # Persist connection choice (fixed 8888)
                 ct = conn_type_var.get()
                 host = ip_var.get().strip()
                 if ct == "tcp" and not host:
                     raise ValueError("Please enter an IP address for Wi-Fi TCP.")
                 self.endpoints[sensor_id] = {"type": ct, "host": host, "port": 8888}
 
-                # existing pH settings save
+                # Existing pH settings save
                 if enable_alarm_var.get():
                     min_val = float(min_ph_var.get()); max_val = float(max_ph_var.get())
                     if min_val >= max_val:
@@ -1704,7 +1802,7 @@ class SensorGUI:
                 if not settings["ph_alarm_enabled"]:
                     self._set_alarm_state("ph_sensor", "normal", self.ph_level_frame["connection_status"])
 
-                # if alarm disabled, ensure UI not flashing
+                # If alarm disabled, ensure UI not flashing
                 if not settings["ph_alarm_enabled"]:
                     self.stop_flashing("pH Sensor")
                     self.safe_gui_update(lambda: self.ph_level_frame["connection_status"].config(text="Connected", fg="green"))
@@ -1830,21 +1928,21 @@ class SensorGUI:
         uScm_var  = tk.BooleanVar(value=show_cfg.get("cond_uScm", False))
         sal_var   = tk.BooleanVar(value=show_cfg.get("sal_psu", False))
 
-        tk.Checkbutton(disp_grp, text="TDS (ppm)",            variable=tds_var).pack(anchor="w", padx=10, pady=3)
-        tk.Checkbutton(disp_grp, text="Conductivity (µS/cm)", variable=uScm_var).pack(anchor="w", padx=10, pady=3)
-        tk.Checkbutton(disp_grp, text="Salinity (PSU ≈ ppt)", variable=sal_var).pack(anchor="w", padx=10, pady=3)
+        tk.Checkbutton(disp_grp, text="TDS (ppm)",            variable=tds_var).pack(anchor="w", padx=int(getattr(self, "profile", {}).get("outer_pad", 10)), pady=3)
+        tk.Checkbutton(disp_grp, text="Conductivity (µS/cm)", variable=uScm_var).pack(anchor="w", padx=int(getattr(self, "profile", {}).get("outer_pad", 10)), pady=3)
+        tk.Checkbutton(disp_grp, text="Salinity (PSU ≈ ppt)", variable=sal_var).pack(anchor="w", padx=int(getattr(self, "profile", {}).get("outer_pad", 10)), pady=3)
 
         # Submit / Reset / Graphics
         def save_tds_settings():
             try:
-                # persist connection choice (fixed port 8888)
+                # Persist connection choice (fixed port 8888)
                 ct = conn_type_var.get()
                 host = ip_var.get().strip()
                 if ct == "tcp" and not host:
                     raise ValueError("Please enter an IP address for Wi-Fi TCP.")
                 self.endpoints[sensor_id] = {"type": ct, "host": host, "port": 8888}
 
-                # alarms & units
+                # Alarms & units
                 if enable_alarm_var.get():
                     min_val = float(min_tds_var.get())
                     max_val = float(max_tds_var.get())
@@ -1859,7 +1957,7 @@ class SensorGUI:
                 settings["tds_alarm_enabled"] = enable_alarm_var.get()
                 settings["use_fahrenheit"]   = use_fahrenheit_var.get()
 
-                # if alarm is OFF, normalize UI immediately
+                # If alarm is OFF, normalize UI immediately
                 if not settings["tds_alarm_enabled"]:
                     try:
                         self._set_alarm_state("tds_sensor", "normal", self.tds_level_frame["connection_status"])
@@ -1868,7 +1966,7 @@ class SensorGUI:
                     except Exception:
                         pass
 
-                # visibility checkboxes: persist which readings to show on tile
+                # Visibility checkboxes: persist which readings to show on tile
                 du = self.display_units.setdefault("E", {})
                 du["show_fields"] = {
                     "tds_ppm":   bool(tds_var.get()),
@@ -1876,7 +1974,7 @@ class SensorGUI:
                     "sal_psu":   bool(sal_var.get()),
                 }
 
-                # persist to disk
+                # Persist to disk
                 self.save_threshold_settings()
 
                 # FORCE a layout pass by resetting the cache, then re-layout
@@ -2034,7 +2132,7 @@ class SensorGUI:
 
         use_positions_var = tk.BooleanVar(value=getattr(self, "use_frame_positions", True))
         tk.Checkbutton(layout_box, text="Enable Custom Frame Layout", variable=use_positions_var).grid(
-            row=0, column=0, columnspan=4, sticky="w", padx=10, pady=(8, 10)
+            row=0, column=0, columnspan=4, sticky="w", padx=int(getattr(self, "profile", {}).get("outer_pad", 10)), pady=(8, 10)
         )
         tk.Label(layout_box, text="Enabled").grid(row=0, column=5, sticky="w", padx=(0, 10), pady=(8, 10))
 
@@ -2055,14 +2153,14 @@ class SensorGUI:
             v_var = tk.BooleanVar(value=self.frame_visibility.get(name, True))
             vis_vars[name] = v_var
 
-            tk.Label(layout_box, text=name).grid(row=i, column=0, sticky="w", padx=10, pady=4)
+            tk.Label(layout_box, text=name).grid(row=i, column=0, sticky="w", padx=int(getattr(self, "profile", {}).get("outer_pad", 10)), pady=4)
             tk.Label(layout_box, text="Row").grid(row=i, column=1, sticky="e", padx=(10, 2))
             tk.Spinbox(layout_box, from_=0, to=9, width=4, textvariable=r_var).grid(row=i, column=2, sticky="w", padx=(0, 10))
             tk.Label(layout_box, text="Col").grid(row=i, column=3, sticky="e", padx=(10, 2))
             tk.Spinbox(layout_box, from_=0, to=9, width=4, textvariable=c_var).grid(row=i, column=4, sticky="w", padx=(0, 10))
             tk.Checkbutton(layout_box, variable=v_var).grid(row=i, column=5, sticky="w", padx=(0, 10))
 
-        # BUTTON ROW
+        # Button Row
         buttons_frame = tk.Frame(container)
         buttons_frame.pack(pady=(30, 60), anchor="center")
 
@@ -2110,7 +2208,7 @@ class SensorGUI:
                 self.frame_positions.setdefault(name, {})
                 self.frame_positions[name]["row"] = int(rv.get())
                 self.frame_positions[name]["col"] = int(cv.get())
-                # keep existing colspan if present
+                # Keep existing colspan if present
                 self.frame_positions[name].setdefault("colspan", 1)
             for name, vvar in vis_vars.items():
                 self.frame_visibility[name] = bool(vvar.get())
@@ -2144,7 +2242,7 @@ class SensorGUI:
             buttons_frame,
             text="Check for Updates",
             font=("Arial", 12, "bold"),
-            width=19,          # spans roughly same width as 2x width=9 buttons
+            width=19,          # Spans roughly same width as 2x width=9 buttons
             height=1,
             command=self.ui_check_gui_update
         )
@@ -2210,7 +2308,7 @@ class SensorGUI:
                     elif "connected" in status_text:
                         lbl.config(fg="green")
                     else:
-                        # fallback to theme text colour
+                        # Fallback to theme text colour
                         lbl.config(fg=self.text_color)
 
                 except Exception:
@@ -2368,7 +2466,7 @@ class SensorGUI:
                 if got != sid:
                     raise IOError(f"ID mismatch (expected {sid}, got {got!r})")
                 
-                # quick probe (A/B/C: RX203, D: RX205, E: RX207)
+                # Probe sensors (A/B/C: RX203, D: RX205, E: RX207)
                 probe_commands = {
                     "A": "RX203\n",
                     "B": "RX203\n",
@@ -2642,11 +2740,11 @@ class SensorGUI:
                             except (BlockingIOError, socket.timeout):
                                 break
                     finally:
-                        port.sock.settimeout(0.5)  # small per-recv; your readline can set its own
+                        port.sock.settimeout(0.5)  # Small per-recv; your readline can set its own
                 else:
                     # Serial: use in_waiting if available
                     try:
-                        ser = getattr(port, "ser", port)  # wrapper or raw pyserial
+                        ser = getattr(port, "ser", port)  # Wrapper or raw pyserial
                         n = getattr(ser, "in_waiting", 0)
                         if n:
                             try:
@@ -2663,7 +2761,7 @@ class SensorGUI:
             try:
                 port.write(line)          # TCP wrapper often accepts str
             except TypeError:
-                port.write(line.encode()) # raw pyserial expects bytes
+                port.write(line.encode()) # Raw pyserial expects bytes
 
         def _read(port, timeout_s=2.5) -> str:
             # If your transports expose a timeout, set it briefly
@@ -2782,28 +2880,28 @@ class SensorGUI:
                     mode = self.display_units.get("E", {}).get("display_mode", "tds_ppm")
 
                     def _apply():
-                        # connection + temp
+                        # Connection + temp
                         self.tds_level_frame["connection_status"].config(text="Connected", fg="green")
                         self.tds_level_frame["temperature_label"].config(text=f"Temperature: {t_text}")
 
-                        # update all sublabels so user can switch mode and see something
+                        # Update all sublabels so user can switch mode and see something
                         self.tds_level_frame["tds_level_label"].config(text=f"TDS: {tds_text}")
                         self.tds_level_frame["cond_uScm_level_label"].config(text=f"Conductivity: {cu_text}")
                         self.tds_level_frame["sal_level_label"].config(text=f"Salinity: {s_text}")
 
-                        # reset fonts
+                        # Reset fonts
                         base = ("Arial", 14, "bold")
                         self.tds_level_frame["tds_level_label"].config(font=base)
                         self.tds_level_frame["cond_uScm_level_label"].config(font=base)
                         self.tds_level_frame["sal_level_label"].config(font=base)
-                        # make selected one a touch bigger
+                        # Make selected one a touch bigger
                         bigger = ("Arial", 15, "bold")
                         if   mode == "tds_ppm":  self.tds_level_frame["tds_level_label"].config(font=bigger)
                         elif mode == "cond_uScm": self.tds_level_frame["cond_uScm_level_label"].config(font=bigger)
                         elif mode == "sal_psu":   self.tds_level_frame["sal_level_label"].config(font=bigger)
 
                     self.safe_gui_update(lambda: (
-                        # existing updates you already do…
+                        # Existing updates you already do…
                        self.tds_level_frame["connection_status"].config(text="Connected", fg="green"),
                        self.tds_level_frame["temperature_label"].config(text=f"Temperature: {t_text}"),
                        self.tds_level_frame["tds_level_label"].config(text=f"TDS: {tds_text}"),
@@ -2854,7 +2952,7 @@ class SensorGUI:
                         ok = False
 
                     if ok:
-                        # reconnect_sensor already reset counts/flags, but be explicit
+                        # Reconnect_sensor already reset counts/flags, but be explicit
                         self.sensor_fail_counts[sensor_id] = 0
                         self.sensor_disabled_flags[sensor_id] = False
                     else:
@@ -2924,9 +3022,9 @@ class SensorGUI:
     
                 except Exception as e:
                     print(f"[WATCHDOG TCP] {sensor_id}: {e}")
-            # fall through to serial scan as last resort
+            # Fall through to serial scan as last resort
 
-        # serial scan (your existing code)
+        # Serial scan (your existing code)
         ports = list(serial.tools.list_ports.comports())
         for port in ports:
             try:
@@ -3023,7 +3121,7 @@ class SensorGUI:
                     if not label.winfo_ismapped():
                         label.pack(pady=10)
 
-            # show/update the text
+            # Show/update the text
             if not temperature:
                 label.config(text="Temperature: --")
                 return
@@ -3037,7 +3135,7 @@ class SensorGUI:
                 else:
                     label.config(text=f"Temperature: {temp_val:.1f} °C")
             except Exception:
-                # fall back to raw string
+                # Fall back to raw string
                 label.config(text=f"Temperature: {temperature}")
 
         except Exception as e:
@@ -3061,7 +3159,7 @@ class SensorGUI:
                 elif frame == self.ro_tank_frame:
                     sensor_id = "C"
 
-                # APPLY TARE OFFSET
+                # Apply tare offset
                 if sensor_id:
                     wl_mmwg = wl_mmwg + float(self.tare_offsets.get(sensor_id, 0.0))
 
@@ -3150,7 +3248,7 @@ class SensorGUI:
                 self._set_alarm_state("ro_tank", "normal", label)
                 return
 
-            # reading -> chosen unit
+            # Reading -> chosen unit
             wl_val = self._num(wl_mmwg)
             if wl_val is None:
                 self._set_alarm_state("ro_tank", "normal", label)
@@ -3169,7 +3267,7 @@ class SensorGUI:
                 liters = wl_val * width * depth / 10000.0
                 value = liters if use_liters else liters * 0.264172
             else:
-                # raw mmWG mode
+                # Raw mmWG mode
                 value = wl_val
 
             lo = self._num(settings.get("min_alarm"))
@@ -3213,13 +3311,13 @@ class SensorGUI:
         self.current_status_text[sensor_key] = state
 
         if state == "normal":
-            # stop flashing + set green
+            # Stop flashing & set green
             self.stop_alarm_flash(sensor_key)
             try:
                 label.config(text="Connected", fg="green")
             except Exception:
                 pass
-                # also stop any alarm sounds if you’ve added them
+                # Stop any alarm sounds if you’ve added them
                 if hasattr(self, "_reset_alarm_sound_state"):
                     self._reset_alarm_sound_state(sensor_key)
                 elif state == "approach":
@@ -3243,7 +3341,7 @@ class SensorGUI:
         try:
             settings = self.display_units.get(sensor_id, {})
             if not settings.get("ph_alarm_enabled", False):
-                # alarm disabled => normal
+                # Alarm disabled => normal
                 self._set_alarm_state("ph_sensor", "normal", label)
                 return
 
@@ -3256,12 +3354,12 @@ class SensorGUI:
             lo = self._num(settings.get("ph_min"))
             hi = self._num(settings.get("ph_max"))
             if lo is None or hi is None or lo >= hi:
-                # misconfigured thresholds => treat as disabled
+                # Misconfigured thresholds => treat as disabled
                 print("[PH ALARM] Invalid thresholds; treating as normal.")
                 self._set_alarm_state("ph_sensor", "normal", label)
                 return
 
-            margin = 0.5  # near-threshold buffer
+            margin = 0.5  # Near threshold buffer
             if val <= lo or val >= hi:
                 self._set_alarm_state("ph_sensor", "critical", label)
             elif (lo < val <= lo + margin) or (hi - margin <= val < hi):
@@ -3270,7 +3368,6 @@ class SensorGUI:
                 self._set_alarm_state("ph_sensor", "normal", label)
 
         except Exception as e:
-            # never surface "Alarm Error" to UI; log and show normal
             print("[PH ALARM] Exception:", e)
             try:
                 import traceback; traceback.print_exc()
@@ -3288,7 +3385,7 @@ class SensorGUI:
             try:
                 settings = self.display_units.get(sensor_id, {})
                 if not settings.get("tds_alarm_enabled", False):
-                    # alarm disabled => normal
+                    # Alarm disabled => normal
                     self._set_alarm_state("tds_sensor", "normal", label)
                     return
 
@@ -3301,12 +3398,12 @@ class SensorGUI:
                 lo = self._num(settings.get("tds_min"))
                 hi = self._num(settings.get("tds_max"))
                 if lo is None or hi is None or lo >= hi:
-                    # misconfigured thresholds => treat as disabled
+                    # Misconfigured thresholds => treat as disabled
                     print("[TDS ALARM] Invalid thresholds; treating as normal.")
                     self._set_alarm_state("tds_sensor", "normal", label)
                     return
 
-                margin = 0.5  # near-threshold buffer
+                margin = 0.5  # Near threshold buffer
                 if val <= lo or val >= hi:
                     self._set_alarm_state("tds_sensor", "critical", label)
                 elif (lo < val <= lo + margin) or (hi - margin <= val < hi):
@@ -3315,7 +3412,6 @@ class SensorGUI:
                     self._set_alarm_state("tds_sensor", "normal", label)
 
             except Exception as e:
-                # never surface "Alarm Error" to UI; log and show normal
                 print("[TDS ALARM] Exception:", e)
                 try:
                     import traceback; traceback.print_exc()
@@ -3327,7 +3423,7 @@ class SensorGUI:
         """Flash between base_color and its alt shade. Cancels any existing job for this sensor."""
         alt = "#CC8400" if base_color == "orange" else "#A52A2A"
 
-        # cancel any stale job first
+        # Cancel any stale job first
         self.stop_alarm_flash(sensor_key, restore=False)
 
         def _tick():
@@ -3379,7 +3475,6 @@ class SensorGUI:
             if self._sound_proc and self._sound_key == key and self._sound_proc.poll() is None:
                 return
 
-            # If a different sound is playing, stop it first
             self._reset_alarm_sound_state()
 
             # Launch aplay quietly
@@ -3446,7 +3541,7 @@ class SensorGUI:
         """
         prev = self.alarm_state.get(sensor_id, "normal")
         if prev == new_state:
-            return  # no change; prevents sound echo and re-flash
+            return 
 
         # Stop old effects first
         self.stop_alarm_flash(sensor_id, restore=False, label=label)
@@ -3496,14 +3591,13 @@ class SensorGUI:
             except Exception:
                 pass
 
-        # Fixed order:
+        # Fixed order layout
         if status:   status.pack(anchor="n")
         if show_tds and tds_lbl:  tds_lbl.pack(pady=6)
         if temp_lbl: temp_lbl.pack(pady=6)
         if show_u   and u_lbl:    u_lbl.pack(pady=6)
         if show_sal and s_lbl:    s_lbl.pack(pady=6)
 
-        # Settings button always last
         if btn: btn.pack(pady=5)
 
     def cleanup_on_exit(self):
@@ -3519,7 +3613,7 @@ class SensorGUI:
                 except Exception as e:
                     print(f"[CLEANUP ERROR] Could not close port for Sensor {sensor_id}: {e}")
 
-        # Turn off pumps safely
+        # Turn off pumps safely fail safe
         for pump_name, pin in self.pump_gpio.items():
             try:
                 GPIO.output(pin, GPIO.LOW)
