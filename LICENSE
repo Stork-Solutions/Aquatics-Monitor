@@ -1,21 +1,77 @@
-MIT License
+STORK SOLUTIONS LTD
 
-Copyright (c) 2026 Stork Solutions Ltd
+SOFTWARE END USER LICENSE AGREEMENT (EULA)
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify or merge. 
-We do not permit the right to sell copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+Effective 2026
+Copyright © 2026 Stork Solutions Ltd
+All Rights Reserved.
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+1. Acceptance of Terms
+By downloading, installing, accessing, or using the Software, you agree to be bound by this End User License Agreement (“Agreement”).
+If you do not agree to these terms, you must not install or use the Software.
+
+2. Definitions
+“Software” means the Stork Aquatics Monitor software, including all source code, object code, firmware integrations, updates, documentation, graphical user interface elements, and associated files.
+“Assets” means all images, graphics, logos, icons, customer-branded materials, visual gauge designs, and other media included in the Software.
+
+3. Grant of License
+Stork Solutions Ltd grants you a limited, non-exclusive, non-transferable, revocable licence to:
+Install and use the Software on a Raspberry Pi device owned or controlled by you;
+Modify the Software for your own internal, non-commercial use only;
+Use the Software in connection with genuine Stork Solutions products.
+This licence does not transfer ownership of the Software.
+
+4. Restrictions
+You may NOT:
+Sell, resell, sublicense, rent, lease, distribute, or commercially exploit the Software in whole or in part;
+Distribute modified versions of the Software;
+Remove, alter, or obscure copyright notices;
+Reverse engineer, decompile, or disassemble the Software for commercial replication;
+Use the Software to develop competing products;
+Offer the Software as part of a paid service;
+Extract, copy, or reuse any Assets.
+Any breach automatically terminates this licence.
+
+4A. Anti-Cloning and Non-Compete Use Restriction
+The Software contains proprietary algorithms, control logic, system architecture, communication protocols, hardware integration methods, and graphical interface designs developed by Stork Solutions Ltd.
+You may NOT, directly or indirectly:
+Use the Software or any modified version of it to develop, manufacture, sell, license, or distribute any competing hardware or software product;
+Use the Software as a reference, template, or basis for creating a substantially similar monitoring, sensor-control, pump-control, or hardware-integrated system;
+Reverse engineer, analyse, decompile, disassemble, or otherwise attempt to extract source code, system architecture, or operational logic for the purpose of commercial replication;
+Replicate or imitate the Software’s structure, workflow logic, communication commands, validation systems, watchdog systems, alarm systems, threshold mechanisms, or user interface design for commercial purposes;
+Assist any third party in developing a competing product based on the Software.
+For the purposes of this clause, a “competing product” includes any hardware-integrated monitoring or control system substantially similar in functionality to products offered by Stork Solutions Ltd.
+Any breach of this clause constitutes a material breach of this Agreement and may result in immediate termination of the licence and legal action.
+
+5. Asset and Image Protection
+All Assets included within the Software remain the exclusive property of Stork Solutions Ltd or its customers.
+No licence is granted to: Copy, Extract, Modify, Redistribute, Reproduce or Reuse in any other software, documentation, marketing material, or derivative work
+This restriction applies worldwide.
+
+6. Hardware Use
+Where the Software is supplied pre-installed on hardware, the licence applies solely to that device.
+Where the Software is downloaded separately, it may only be used on devices operated by the end user and not redistributed to third parties.
+
+7. International Use
+This licence applies worldwide.
+You are responsible for complying with local laws in your jurisdiction. Nothing in this Agreement limits any non-waivable consumer rights that may apply under local law.
+
+8. Intellectual Property
+All intellectual property rights in the Software and Assets remain the sole property of Stork Solutions Ltd.
+No rights are granted except those expressly stated.
+
+9. Disclaimer of Warranty
+THE SOFTWARE IS PROVIDED “AS IS” WITHOUT WARRANTY OF ANY KIND, WHETHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, OR NON-INFRINGEMENT.
+
+10. Limitation of Liability
+TO THE MAXIMUM EXTENT PERMITTED BY LAW, STORK SOLUTIONS LTD SHALL NOT BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, OR CONSEQUENTIAL DAMAGES ARISING OUT OF THE USE OF THE SOFTWARE.
+Nothing in this Agreement limits liability for death or personal injury caused by negligence or for fraud, where such limitation would be unlawful under UK law.
+
+11. Termination
+This licence terminates automatically if you breach its terms.
+Upon termination, you must cease use and delete all copies of the Software.
+
+12. Governing Law and Jurisdiction
+This Agreement shall be governed by and construed in accordance with the laws of England and Wales.
+Any disputes shall be subject to the exclusive jurisdiction of the courts of England and Wales.
