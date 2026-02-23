@@ -1,8 +1,8 @@
 -- Known Bugs we are working on --
 V1.4.1 and up - 
-Screen sizing layout has a small dead frames on right hand side and bottom of UI.
-Not loading frame layout from settings.json file. { Fixed on 1.4.2}
-Updat popup not working in dark mode. { Fixed on 1.4.2}
+Screen sizing layout has a small dead frames on right hand side and bottom of UI. { Assessing fix options }
+Not loading frame layout from settings.json file. { Fixed on 1.4.2 }
+Update popup not working in dark mode. { Fixed on 1.4.2 }
 
 -- Updates Released -- 
 V1.4.0 - Added end user adjustable frame layout & endable/ disable unused frames. Enabled auto update via GitHub. 
