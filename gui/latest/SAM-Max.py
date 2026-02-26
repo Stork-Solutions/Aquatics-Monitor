@@ -1,6 +1,8 @@
 # Wi-Fi TCP - [Enabled]
 # 4Ch Relay - [Enabled]
 # Auto Updating - [Enabled]
+# Data Logging - [Enabled] {Licence Required}
+# User Changable Image Frame B Only - [Enabled]
 import tkinter as tk
 from tkinter import messagebox
 import tkinter.ttk as ttk
@@ -22,9 +24,104 @@ import signal
 import hashlib
 import urllib.request
 import urllib.error
+import datetime
+import hmac
+import csv 
 
-__version__ = "1.4.2"
-GUI_MANIFEST_URL = "https://raw.githubusercontent.com/Stork-Solutions/Aquatics-Monitor/main/gui/latest/gui_update.json"
+APP_NAME = "Stork Solutions Ltd Aquatics Monitor Application"
+__version__ = "1.4.3"
+
+GUI_MANIFEST_URL = "https://raw.githubusercontent.com/Stork-Solutions/Aquatics-Monitor/main/gui/latest/gui_update.json"# ===== Data Logging Licensing Helpers (v1.4.3) =====
+
+LICENSE_FEATURE = "DATA_LOGGING"
+# Restricted alphabet to avoid confusing characters (I, O, L, 0, 1)
+_KEY_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
+_KEY_GROUP = 5
+_KEY_GROUPS = 3
+
+LICENSE_SECRET_PASSPHRASE = "bQ7mZ3vN2pK8rT6xH4sW9dY5cL1jA0uE"
+
+def _get_pi_cpu_serial() -> str:
+    try:
+        with open("/proc/cpuinfo", "r") as f:
+            for line in f:
+                if line.lower().startswith("serial"):
+                    parts = line.split(":")
+                    if len(parts) >= 2:
+                        return parts[1].strip()
+    except Exception:
+        pass
+    return ""
+
+def _get_machine_id_fallback() -> str:
+    try:
+        with open("/etc/machine-id", "r") as f:
+            return f.read().strip()
+    except Exception:
+        return ""
+
+def get_device_id() -> str:
+    serial = _get_pi_cpu_serial()
+    if serial:
+        return serial
+    mid = _get_machine_id_fallback()
+    return mid or "UNKNOWN_DEVICE"
+
+def _normalize_key(user_key: str) -> str:
+    if not user_key:
+        return ""
+    k = user_key.strip().upper().replace("-", "").replace(" ", "")
+    # Keep only allowed characters
+    return "".join([c for c in k if c in _KEY_ALPHABET])
+
+def format_license_key(user_key: str) -> str:
+    k = _normalize_key(user_key)
+    if len(k) < _KEY_GROUP * _KEY_GROUPS:
+        return k
+    k = k[:_KEY_GROUP * _KEY_GROUPS]
+    return "-".join([k[i:i+_KEY_GROUP] for i in range(0, _KEY_GROUP*_KEY_GROUPS, _KEY_GROUP)])
+
+def _digest_to_key15(digest: bytes) -> str:
+    # Map digest bytes to alphabet (base-N style)
+    chars = []
+    for b in digest:
+        chars.append(_KEY_ALPHABET[b % len(_KEY_ALPHABET)])
+        if len(chars) >= _KEY_GROUP * _KEY_GROUPS:
+            break
+    return "".join(chars)
+
+def generate_license_key(device_id: str) -> str:
+    # HMAC-SHA256(secret, "SAM|FEATURE|DEVICE")
+    msg = f"SAM|{LICENSE_FEATURE}|{device_id}".encode("utf-8")
+    secret = LICENSE_SECRET_PASSPHRASE.encode("utf-8")
+    digest = hmac.new(secret, msg, hashlib.sha256).digest()
+    return format_license_key(_digest_to_key15(digest))
+
+def normalize_license_key(key: str) -> str:
+    # Uppercase, remove spaces and hyphens
+    return "".join(ch for ch in (key or "").upper().strip() if ch.isalnum())
+
+def validate_license_key(license_key: str, device_id: str) -> bool:
+    entered = normalize_license_key(license_key)
+    expected = normalize_license_key(generate_license_key(device_id))
+
+    return entered == expected
+
+def safe_parse_float(x):
+    try:
+        if x is None:
+            return None
+        s = str(x).strip()
+        if not s or s in ("--", "ERR"):
+            return None
+        # remove units common in SAM UI strings
+        for u in ("mmWG", "mBar", "°C", "ppm", "µS/cm", "PSU"):
+            s = s.replace(u, "")
+        s = s.replace("Temperature:", "").replace("TDS:", "").replace("Conductivity:", "").replace("Salinity:", "")
+        s = s.replace(",", "").strip()
+        return float(s)
+    except Exception:
+        return None
 
 class TransportTCP:
     def __init__(self, host, port=8888, timeout=2.0):
@@ -72,13 +169,34 @@ class SensorGUI:
         # (fixes cases where settings appear to "not load" until re-submitted).
         self._base_dir = os.path.dirname(os.path.abspath(__file__))
         self._settings_path = os.path.join(self._base_dir, "settings.json")
+
+        # --- Data Logging / Licensing (v1.4.3) ---
+        self.device_id = get_device_id()
+        print(f"[LICENSE] Device ID: {self.device_id}")
+        self._license_path = os.path.join(self._base_dir, "license.json")
+        self.is_data_logging_licensed = False
+
+        # Logging settings persisted in settings.json
+        self.data_logging_settings = {
+            "enabled": False,
+            "interval": "1Min",   # 30Sec | 1Min | 30Min | 1Hour
+            "sensors": {"A": True, "B": True, "C": True, "D": True, "E": True},
+            "retention_days": 30
+        }
+        self._log_job = None
+        self._log_current_date = None
+        self._log_current_path = None
+        self.cached_readings = {}  # latest parsed values per sensor for logging
+        self._ensure_logs_dir()
+        self._cleanup_old_logs(self.data_logging_settings.get("retention_days", 30))
+        self._load_license()
+        
         # GUI Setup
-        self.root.title("Stork Aquatics Monitor Max V1.4.1")
+        self.root.title(f"{APP_NAME} v{__version__}")
         try:
             screen_h = self.root.winfo_screenheight()
         except Exception:
             screen_h = 800
-
         
         # --- Screen profile (persisted in settings.json) ---
         # Supported deployments: 4.3", 5", 10.1"
@@ -242,7 +360,8 @@ class SensorGUI:
                  "tds": "#A52A2A",
                  "cond": "#00FF00",
                  "sal": "#FFA500"
-             }
+             },
+             "image_frame_b_file": "image2.png",
         }
        
         # Serial port connections
@@ -372,6 +491,17 @@ class SensorGUI:
 
         # Load saved settings BEFORE applying visibility/layout
         self.load_threshold_settings()
+        # Apply saved Image Frame B selection on boot (after settings load)
+        try:
+            self.refresh_image_frame_b()
+        except Exception:
+            pass
+        # Start logging on boot if enabled + licensed
+        try:
+            if self.data_logging_settings.get('enabled', False) and self.is_data_logging_licensed:
+                self.start_logging()
+        except Exception:
+            pass
         # Apply frame visibility/layout now, and again shortly after the window manager finalises geometry.
         self.apply_frame_visibility()
         try:
@@ -389,9 +519,25 @@ class SensorGUI:
     def show_confirm(self, title, message, yes_text="Yes", no_text="Cancel"):
         import tkinter as tk
         popup = tk.Toplevel(self.root)
-        popup.title(title)
+        popup.title("Enter License Key")
         popup.transient(self.root)
-        popup.grab_set()
+        popup.attributes("-fullscreen", True)
+        popup.bind("<Double-Button-1>", lambda e: popup.attributes("-fullscreen", not popup.attributes("-fullscreen")))
+
+        # Make sure it's actually viewable before grab_set()
+        popup.lift()
+        popup.attributes("-topmost", True)
+        popup.update_idletasks()
+
+        def _try_grab():
+            try:
+                popup.grab_set()
+                popup.focus_set()
+            except tk.TclError:
+                # retry shortly if the window manager hasn't mapped it yet
+                popup.after(50, _try_grab)
+
+        _try_grab()
 
         # Simple content
         container = tk.Frame(popup, padx=20, pady=16)
@@ -695,21 +841,24 @@ class SensorGUI:
         auto_top_up_label = tk.Label(frame, text="", font=("Arial", 14, "bold"))
         auto_top_up_label.pack(pady=5)
 
+        controls = tk.Frame(frame)
+        controls.pack(pady=5)
+
         # Auto Mode Checkbox
         auto_mode_var = tk.BooleanVar(value=False)
         auto_checkbox = tk.Checkbutton(
-            frame,
+            controls,
             text="Enable Auto Mode",
             variable=auto_mode_var,
             font=("Arial", 12),
             anchor="w"
         )
-        auto_checkbox.pack(pady=5)
+        auto_checkbox.pack(pady=(0, 12))   # <-- gap between checkbox and button
 
         # Toggle Button
-        toggle_button = tk.Button(frame, text="Turn On")
+        toggle_button = tk.Button(controls, text="Turn On")
         toggle_button.config(command=lambda: self.toggle_pump(title, pump_status, toggle_button))
-        toggle_button.pack(pady=5)
+        toggle_button.pack(pady=(20, 5))
 
         return {
             "frame": frame,
@@ -1029,7 +1178,6 @@ class SensorGUI:
             # Non-fatal: keep normal control flow
             pass
 
-
     def toggle_pump(self, pump_name, status_label=None, toggle_button=None, force_state=None, suppress_auto_disable=False):
         # Determine if this is a manual toggle
         user_override = force_state is None
@@ -1108,6 +1256,35 @@ class SensorGUI:
             "sal_level_label": sal_level_label,
         }
 
+    def get_available_images(self):
+        """Return sorted list of image filenames found in ./images."""
+        try:
+            images_dir = os.path.join(self._base_dir, "images")
+            if not os.path.isdir(images_dir):
+                return []
+            exts = (".png", ".jpg", ".jpeg", ".gif")
+            files = [f for f in os.listdir(images_dir) if f.lower().endswith(exts)]
+            return sorted(files)
+        except Exception:
+            return []
+
+    def refresh_image_frame_b(self):
+        """Reload Image Frame B based on visual_settings[image_frame_b_file]."""
+        try:
+            # If the frame exists, destroy and recreate it in the same grid position
+            if hasattr(self, "image_frame_b") and isinstance(self.image_frame_b, dict):
+                old_frame = self.image_frame_b.get("frame")
+                if old_frame is not None:
+                    info = old_frame.grid_info()
+                    row = int(info.get("row", 0))
+                    col = int(info.get("column", 0))
+                    colspan = int(info.get("columnspan", 1))
+                    old_frame.destroy()
+                    self.image_frame_b = self.create_image_frame_b("", row, col, colspan=colspan)
+                    self.apply_theme()
+                    return
+        except Exception:
+            pass
     def create_image_frame_b(self, title, row, column, colspan=1):
         frame = tk.LabelFrame(self.root, text=title or "", font=("Arial", 16, "bold"), padx=int(getattr(self, "profile", {}).get("outer_pad", 10)), pady=10)
         frame.grid(row=row, column=column, padx=int(getattr(self, "profile", {}).get("outer_pad", 10)), pady=int(getattr(self, "profile", {}).get("pady", 10)), sticky="nsew", columnspan=colspan)
@@ -1118,9 +1295,10 @@ class SensorGUI:
         try:
             from pathlib import Path as _P
             base_dir = _P(__file__).resolve().parent
-            img_path = base_dir / "MAIN" / "image2.png"
+            filename = self.visual_settings.get("image_frame_b_file", "image2.png")
+            img_path = base_dir / "images" / filename
             if not img_path.exists():
-                img_path = base_dir / "image2.png"  # fallback if you run inside MAIN
+                img_path = base_dir / filename  # fallback for legacy layouts
 
             if img_path.exists():
                 original = tk.PhotoImage(file=str(img_path))
@@ -1136,7 +1314,7 @@ class SensorGUI:
                 img_label.pack(expand=True, anchor="center")
                 return {"frame": frame, "image_label": img_label}
             else:
-                tk.Label(frame, text="image2.png not found in MAIN/", fg="red").pack()
+                tk.Label(frame, text=f"{filename} not found in images/", fg="red").pack()
         except Exception as e:
             tk.Label(frame, text=f"Image error: {e}", fg="red").pack()
 
@@ -1152,9 +1330,9 @@ class SensorGUI:
         try:
             from pathlib import Path as _P
             base_dir = _P(__file__).resolve().parent
-            img_path = base_dir / "MAIN" / "image1.png"
+            img_path = base_dir / "images" / "Stork_Logo.png"
             if not img_path.exists():
-                img_path = base_dir / "image1.png"  # fallback if you run inside MAIN
+                img_path = base_dir / "Stork_Logo.png"  # fallback for legacy layouts
 
             if img_path.exists():
                 original = tk.PhotoImage(file=str(img_path))
@@ -1170,14 +1348,437 @@ class SensorGUI:
                 img_label.pack(expand=True, anchor="center")
                 return {"frame": frame, "image_label": img_label}
             else:
-                tk.Label(frame, text="image1.png not found in MAIN/", fg="red").pack()
+                tk.Label(frame, text="Stork_Logo.png not found in MAIN/", fg="red").pack()
         except Exception as e:
             tk.Label(frame, text=f"Image error: {e}", fg="red").pack()
 
         return {"frame": frame}
-     
-    def open_settings_popup(self, sensor_id):
+    
+    # Data Logging
+    def _ensure_logs_dir(self):
+        self.logs_dir = os.path.join(self._base_dir, "logs")
+        os.makedirs(self.logs_dir, exist_ok=True)
 
+    def _cleanup_old_logs(self, retention_days=30):
+        try:
+            if not hasattr(self, "logs_dir"):
+                return
+            today = datetime.date.today()
+            cutoff = today - datetime.timedelta(days=int(retention_days))
+            for filename in os.listdir(self.logs_dir):
+                if not (filename.startswith("SAM_LOG_") and filename.endswith(".csv")):
+                    continue
+                try:
+                    date_part = filename.replace("SAM_LOG_", "").replace(".csv", "")
+                    file_date = datetime.datetime.strptime(date_part, "%Y-%m-%d").date()
+                    if file_date < cutoff:
+                        os.remove(os.path.join(self.logs_dir, filename))
+                        print(f"[LOG CLEANUP] Deleted old log: {filename}")
+                except Exception:
+                    continue
+        except Exception as e:
+            print(f"[LOG CLEANUP] Failed: {e}")
+
+    def _load_license(self):
+        self.is_data_logging_licensed = False
+        try:
+            if os.path.exists(self._license_path):
+                with open(self._license_path, "r") as f:
+                    data = json.load(f)
+                key = data.get("data_logging_key") or data.get("key") or ""
+                dev = data.get("device_id") or ""
+                if dev and dev == self.device_id and validate_license_key(key, self.device_id):
+                    self.is_data_logging_licensed = True
+        except Exception as e:
+            print(f"[LICENSE] Failed to load license: {e}")
+            self.is_data_logging_licensed = False
+        print(f"[LICENSE] Data Logging licensed: {self.is_data_logging_licensed}")
+
+    def _save_license(self, key: str):
+        try:
+            data = {
+                "device_id": self.device_id,
+                "data_logging_key": format_license_key(key),
+                "licensed_features": {"data_logging": True},
+                "created": datetime.datetime.now().isoformat(timespec="seconds"),
+            }
+            with open(self._license_path, "w") as f:
+                json.dump(data, f, indent=2)
+            self.is_data_logging_licensed = True
+        except Exception as e:
+            print(f"[LICENSE] Failed to save license: {e}")
+            self.is_data_logging_licensed = False
+        print(f"[LICENSE] Data Logging licensed: {self.is_data_logging_licensed}")
+
+    def _interval_to_ms(self, interval: str) -> int:
+        mapping = {"30Sec": 30_000, "1Min": 60_000, "30Min": 1_800_000, "1Hour": 3_600_000}
+        return int(mapping.get(interval, 60_000))
+
+    def _log_filename_for_date(self, d: datetime.date) -> str:
+        return os.path.join(self.logs_dir, f"SAM_LOG_{d.strftime('%Y-%m-%d')}.csv")
+
+    def _ensure_daily_log_file(self):
+        today = datetime.date.today()
+        if self._log_current_date != today or not self._log_current_path:
+            self._log_current_date = today
+            self._log_current_path = self._log_filename_for_date(today)
+            new_file = not os.path.exists(self._log_current_path)
+            if new_file:
+                with open(self._log_current_path, "w", newline="") as f:
+                    w = csv.writer(f)
+                    w.writerow(["timestamp_local","sensor_id","connected","water_mmwg","temp_c","ph","tds_ppm","conductivity_uScm","salinity_psu"])
+            # cleanup at rollover too (Option C part 2)
+            self._cleanup_old_logs(self.data_logging_settings.get("retention_days", 30))
+
+    def start_logging(self):
+        # Cancel any existing schedule and start fresh
+        self.stop_logging()
+        if not self.data_logging_settings.get("enabled", False):
+            return
+        if not self.is_data_logging_licensed:
+            # should never happen if UI gates correctly, but guard anyway
+            return
+        self._ensure_daily_log_file()
+        self._log_job = self.root.after(self._interval_to_ms(self.data_logging_settings.get("interval", "1Min")), self._log_tick)
+
+    def stop_logging(self):
+        try:
+            if self._log_job:
+                self.root.after_cancel(self._log_job)
+        except Exception:
+            pass
+        self._log_job = None
+
+    def _should_log_sensor(self, sid: str) -> bool:
+        # Must be enabled in logging settings AND frame visibility
+        if not self.data_logging_settings.get("sensors", {}).get(sid, True):
+            return False
+        # Respect frame visibility: if frame disabled, don't log
+        try:
+            if hasattr(self, "frame_visibility") and (sid in self.frame_visibility):
+                if not bool(self.frame_visibility.get(sid, True)):
+                    return False
+        except Exception:
+            pass
+        return True
+
+    def _log_tick(self):
+        try:
+            if not (self.data_logging_settings.get("enabled", False) and self.is_data_logging_licensed):
+                self.stop_logging()
+                return
+
+            self._ensure_daily_log_file()
+
+            ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            rows = []
+            for sid in ("A","B","C","D","E"):
+                if not self._should_log_sensor(sid):
+                    continue
+                rd = self.cached_readings.get(sid, {})
+                connected = 1 if rd.get("connected", False) else 0
+
+                water = rd.get("water_mmwg")
+                temp  = rd.get("temp_c")
+                ph    = rd.get("ph")
+                tds   = rd.get("tds_ppm")
+                cu    = rd.get("cond_uScm")
+                sal   = rd.get("sal_psu")
+
+                # Sensor E: only log optional fields if enabled in settings
+                if sid == "E":
+                    show_cfg = self.display_units.get("E", {}).get("show_fields", {})
+                    if not bool(show_cfg.get("tds_ppm", True)):
+                        tds = None
+                    if not bool(show_cfg.get("cond_uScm", False)):
+                        cu = None
+                    if not bool(show_cfg.get("sal_psu", False)):
+                        sal = None
+
+                # RO tank temp: only if enabled
+                if sid == "C":
+                    if not bool(self.display_units.get("C", {}).get("r2_temp_enabled", False)):
+                        temp = None
+
+                rows.append([ts, sid, connected,
+                             "" if water is None else water,
+                             "" if temp  is None else temp,
+                             "" if ph    is None else ph,
+                             "" if tds   is None else tds,
+                             "" if cu    is None else cu,
+                             "" if sal   is None else sal])
+
+            if rows:
+                with open(self._log_current_path, "a", newline="") as f:
+                    w = csv.writer(f)
+                    w.writerows(rows)
+
+        except Exception as e:
+            print(f"[LOG] Tick error: {e}")
+        finally:
+            # reschedule
+            try:
+                ms = self._interval_to_ms(self.data_logging_settings.get("interval", "1Min"))
+                self._log_job = self.root.after(ms, self._log_tick)
+            except Exception:
+                self._log_job = None
+
+    def open_license_entry_popup(self, on_success=None):
+        popup = tk.Toplevel(self.root)
+        popup.title("Data Logging Licence")
+        popup.attributes("-fullscreen", True)
+        popup.transient(self.root)
+        popup.focus_set()
+        popup.lift()
+        popup.attributes('-topmost', True)
+        popup.bind("<Double-Button-1>", lambda event: popup.attributes("-fullscreen", not popup.attributes("-fullscreen")))
+
+        container = tk.Frame(popup)
+        container.pack(fill="both", expand=True, padx=20, pady=20)
+
+        tk.Label(container, text="Data Logging is a locked feature.", font=("Arial", 16, "bold")).pack(pady=10)
+        tk.Label(container, text="Device ID (send this to Stork Solutions):", font=("Arial", 12)).pack(pady=(20,5))
+        tk.Label(container, text=self.device_id, font=("Courier", 14, "bold")).pack(pady=(0,20))
+
+        tk.Label(container, text="Enter Licence Key:", font=("Arial", 12)).pack(pady=(10,5))
+        key_var = tk.StringVar()
+        tk.Entry(container, textvariable=key_var, font=("Courier", 16), justify="center").pack(pady=10)
+
+        def submit():
+            key = key_var.get()
+            if validate_license_key(key, self.device_id):
+                self._save_license(key)
+                self.show_info("Licence Accepted", "Data Logging has been unlocked.")
+                popup.destroy()
+                if callable(on_success):
+                    on_success()
+            else:
+                self.show_error("Invalid Key", "That licence key is not valid for this device.")
+
+        tk.Button(container, text="Submit", command=submit).pack(pady=12)
+        tk.Button(container, text="Close", command=popup.destroy).pack(pady=6)
+
+        if self.visual_settings.get("dark_mode"):
+            self.apply_theme(popup)
+        
+        # --- make sure window is mapped before modal grab ---
+        popup.update_idletasks()
+        popup.deiconify()
+        popup.lift()
+
+        try:
+            popup.wait_visibility()  # blocks until window is viewable
+        except Exception:
+            pass
+
+        def _try_grab():
+            try:
+                popup.grab_set()
+                popup.focus_force()
+            except tk.TclError:
+                popup.after(50, _try_grab)
+
+        popup.after(0, _try_grab)
+
+    def open_data_logging_popup(self):
+        popup = tk.Toplevel(self.root)
+        popup.title("Data Logging")
+        popup.attributes("-fullscreen", True)
+        popup.transient(self.root)
+        popup.grab_set()
+        popup.focus_set()
+        popup.lift()
+        popup.attributes('-topmost', True)
+        popup.bind("<Double-Button-1>", lambda event: popup.attributes("-fullscreen", not popup.attributes("-fullscreen")))
+
+        outer = tk.Frame(popup); outer.pack(fill="both", expand=True)
+        canvas = tk.Canvas(outer, highlightthickness=0); canvas.pack(side="left", fill="both", expand=True)
+        sb = tk.Scrollbar(outer, orient="vertical", command=canvas.yview); sb.pack(side="right", fill="y")
+        canvas.configure(yscrollcommand=sb.set)
+        scroll = tk.Frame(canvas)
+        win = canvas.create_window((0,0), window=scroll, anchor="nw")
+        def on_conf(e):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+            canvas.itemconfig(win, width=e.width)
+        scroll.bind("<Configure>", on_conf)
+        canvas.bind("<Configure>", on_conf)
+        canvas.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
+        canvas.bind_all("<Button-4>", lambda e: canvas.yview_scroll(-1, "units"))
+        canvas.bind_all("<Button-5>", lambda e: canvas.yview_scroll(1, "units"))
+
+        container = tk.Frame(scroll)
+        container.pack(fill="both", expand=True, padx=20, pady=20)
+
+        tk.Label(container, text="Data Logging", font=("Arial", 18, "bold")).pack(pady=10)
+
+        enabled_var = tk.BooleanVar(value=bool(self.data_logging_settings.get("enabled", False)))
+
+        interval_var = tk.StringVar(value=self.data_logging_settings.get("interval", "1Min"))
+
+        def on_toggle_enabled():
+            if enabled_var.get():
+                if not self.is_data_logging_licensed:
+                    # prompt for key, then enable if successful
+                    enabled_var.set(False)
+                    def _after():
+                        enabled_var.set(True)
+                        self.data_logging_settings["enabled"] = True
+                        self.save_threshold_settings()
+                        self.start_logging()
+                    self.open_license_entry_popup(on_success=_after)
+                    return
+                self.data_logging_settings["enabled"] = True
+                self.save_threshold_settings()
+                self.start_logging()
+            else:
+                self.data_logging_settings["enabled"] = False
+                self.save_threshold_settings()
+                self.stop_logging()
+
+        tk.Checkbutton(container, text="Enable Data Logging (Licensed)", variable=enabled_var,
+                       command=on_toggle_enabled, font=("Arial", 14)).pack(pady=10)
+
+        tk.Label(container, text="Logging Interval:", font=("Arial", 12, "bold")).pack(pady=(20,5))
+        interval_box = ttk.Combobox(container, textvariable=interval_var, values=["30Sec","1Min","30Min","1Hour"], state="readonly", width=10)
+        interval_box.pack(pady=5)
+
+        def on_interval_change(event=None):
+            self.data_logging_settings["interval"] = interval_var.get()
+            self.save_threshold_settings()
+            if self.data_logging_settings.get("enabled") and self.is_data_logging_licensed:
+                self.start_logging()
+        interval_box.bind("<<ComboboxSelected>>", on_interval_change)
+
+        # Sensor selection (optional) - still respects frame visibility and E field toggles
+        tk.Label(container, text="Sensors to Log:", font=("Arial", 12, "bold")).pack(pady=(20,10))
+        sens_frame = tk.Frame(container); sens_frame.pack(pady=5)
+        sens_vars = {}
+        for sid in ("A","B","C","D","E"):
+            v = tk.BooleanVar(value=bool(self.data_logging_settings.get("sensors", {}).get(sid, True)))
+            sens_vars[sid] = v
+            tk.Checkbutton(sens_frame, text=f"Sensor {sid}", variable=v, font=("Arial", 12)).pack(anchor="w", pady=2)
+
+        def save_sensors():
+            self.data_logging_settings["sensors"] = {sid: bool(v.get()) for sid, v in sens_vars.items()}
+            self.save_threshold_settings()
+            self.show_info("Saved", "Logging selections saved.")
+
+        tk.Button(container, text="Save Sensor Selection", command=save_sensors).pack(pady=12)
+
+        tk.Label(container, text="Retention: 30 days (auto cleanup)", fg="grey").pack(pady=(10,20))
+
+        tk.Button(container, text="Manage Log Files", command=self.open_manage_logs_popup).pack(pady=8)
+        tk.Button(container, text="Close", command=popup.destroy).pack(pady=10)
+
+        if self.visual_settings.get("dark_mode"):
+            self.apply_theme(popup)
+
+    def _list_log_files(self):
+        try:
+            files = [f for f in os.listdir(self.logs_dir) if f.startswith("SAM_LOG_") and f.endswith(".csv")]
+            files.sort(reverse=True)
+            return files
+        except Exception:
+            return []
+
+    def _list_mount_points(self):
+        mounts = []
+        # Common Raspberry Pi removable locations
+        for base in ("/media/pi", "/media", "/mnt"):
+            try:
+                if os.path.isdir(base):
+                    for name in os.listdir(base):
+                        p = os.path.join(base, name)
+                        if os.path.ismount(p) or os.path.isdir(p):
+                            mounts.append(p)
+            except Exception:
+                pass
+        # Deduplicate
+        out=[]
+        for mnt in mounts:
+            if mnt not in out:
+                out.append(mnt)
+        return out
+
+    def open_manage_logs_popup(self):
+        popup = tk.Toplevel(self.root)
+        popup.title("Manage Logs")
+        popup.attributes("-fullscreen", True)
+        popup.transient(self.root)
+        popup.grab_set()
+        popup.focus_set()
+        popup.lift()
+        popup.attributes('-topmost', True)
+        popup.bind("<Double-Button-1>", lambda event: popup.attributes("-fullscreen", not popup.attributes("-fullscreen")))
+
+        container = tk.Frame(popup)
+        container.pack(fill="both", expand=True, padx=20, pady=20)
+
+        tk.Label(container, text="Manage Log Files", font=("Arial", 18, "bold")).pack(pady=10)
+
+        files = self._list_log_files()
+        file_var = tk.StringVar(value=files[0] if files else "")
+        tk.Label(container, text="Select Log File:", font=("Arial", 12)).pack(pady=(20,5))
+        file_box = ttk.Combobox(container, textvariable=file_var, values=files, state="readonly", width=30)
+        file_box.pack(pady=5)
+
+        mounts = self._list_mount_points()
+        mount_var = tk.StringVar(value=mounts[0] if mounts else "")
+        tk.Label(container, text="Download Destination (Mounted Drive):", font=("Arial", 12)).pack(pady=(20,5))
+        mount_box = ttk.Combobox(container, textvariable=mount_var, values=mounts, state="readonly", width=45)
+        mount_box.pack(pady=5)
+
+        def refresh():
+            new = self._list_log_files()
+            file_box["values"] = new
+            if new:
+                file_var.set(new[0])
+
+        def do_download():
+            fname = file_var.get()
+            dest = mount_var.get()
+            if not fname:
+                self.show_error("No file", "No log file selected.")
+                return
+            if not dest or not os.path.isdir(dest):
+                self.show_error("No drive", "No mounted drive selected.")
+                return
+            src = os.path.join(self.logs_dir, fname)
+            try:
+                shutil.copy2(src, os.path.join(dest, fname))
+                self.show_info("Downloaded", f"Copied {fname} to {dest}")
+            except Exception as e:
+                self.show_error("Download failed", str(e))
+
+        def do_delete():
+            fname = file_var.get()
+            if not fname:
+                self.show_error("No file", "No log file selected.")
+                return
+            # block active log deletion when logging enabled
+            active = os.path.basename(self._log_filename_for_date(datetime.date.today()))
+            if self.data_logging_settings.get("enabled", False) and fname == active:
+                self.show_error("Active Log", "This is the active log for today. Disable logging before deleting it.")
+                return
+
+            if not self.show_confirm("Confirm Delete", f"Delete {fname}? This cannot be undone."):
+                return
+            try:
+                os.remove(os.path.join(self.logs_dir, fname))
+                self.show_info("Deleted", f"Deleted {fname}")
+                refresh()
+            except Exception as e:
+                self.show_error("Delete failed", str(e))
+
+        tk.Button(container, text="Refresh List", command=refresh).pack(pady=10)
+        tk.Button(container, text="Download to Drive", command=do_download).pack(pady=8)
+        tk.Button(container, text="Delete File", command=do_delete).pack(pady=8)
+        tk.Button(container, text="Close", command=popup.destroy).pack(pady=12)
+
+        if self.visual_settings.get("dark_mode"):
+            self.apply_theme(popup)
+
+    def open_settings_popup(self, sensor_id):
         popup = tk.Toplevel(self.root)
         popup.title(f"Settings for Sensor {sensor_id}")
         popup.attributes("-fullscreen", True)
@@ -1350,7 +1951,7 @@ class SensorGUI:
                 # Warn if default thresholds used with volume units
                 default_on, default_off = 315, 336
                 if (use_liters_var.get() or use_gallons_var.get()) and on_val == default_on and off_val == default_off:
-                    if not messagebox.askyesno(
+                    if not self.show_confirm(
                         "Default Thresholds Detected",
                         "You selected Liters/Gallons but left default thresholds.\n"
                         "Do you want to continue?"
@@ -1395,7 +1996,7 @@ class SensorGUI:
                 popup.destroy()
 
             except Exception as e:
-                messagebox.showerror("Invalid Input", str(e))
+                self.show_error("Invalid Input", str(e))
 
    
         tk.Button(container, text="Submit", command=save_thresholds).pack(pady=20)
@@ -1412,6 +2013,7 @@ class SensorGUI:
                  text="Tare Level (Zero mmWG)",
                  command=lambda sid=sensor_id, win=popup: self.tare_sensor(sid, win)
         ).pack(pady=8)
+        tk.Button(container, text="Data Logging", command=lambda: (popup.destroy(), self.open_data_logging_popup())).pack(pady=10)
 
         tk.Button(container, text="Graphics", command=lambda: (popup.destroy(), self.open_graphics_popup())).pack(pady=10)
 
@@ -1454,6 +2056,8 @@ class SensorGUI:
                     self.thresholds.update(data.get("thresholds", {}))
                     self.display_units.update(data.get("display_units", {}))
                     self.visual_settings.update(data.get("visual_settings", {}))
+                    # Ensure image settings keys exist
+                    self.visual_settings.setdefault("image_frame_b_file", "image2.png")
                     getattr(self, "sensor_firmware", {}).update(data.get("sensor_firmware", {}))
                     self.endpoints = data.get("endpoints", self.endpoints)
                     self.tare_offsets.update(data.get("tare_offsets", {"A":0.0, "B":0.0, "C":0.0}))
@@ -1464,6 +2068,14 @@ class SensorGUI:
                         self.profile = self.SCREEN_PROFILES[self.screen_profile]
                         self.scale = max(0.7, min(1.6, float(self.profile.get("scale", 1.0))))
                     self.frame_visibility.update(data.get("frame_visibility", {}))
+                    self.data_logging_settings.update(data.get("data_logging", {}))
+                    # Ensure missing keys exist
+                    self.data_logging_settings.setdefault("enabled", False)
+                    self.data_logging_settings.setdefault("interval", "1Min")
+                    self.data_logging_settings.setdefault("sensors", {"A":True,"B":True,"C":True,"D":True,"E":True})
+                    self.data_logging_settings.setdefault("retention_days", 30)
+                    # If enabled and licensed, start logging after UI init
+
                     self.graphics_settings = data.get("graphics_settings", {
                         "dark_mode": False,
                         "color_water": "#0000FF",
@@ -1566,7 +2178,7 @@ class SensorGUI:
 
         toggle_ip_state()
 
-        # Existing RO settings
+        # RO settings
         display_unit = self.display_units[sensor_id]
         
         r2_temp_var = tk.BooleanVar(value=display_unit.get("r2_temp_enabled", False))
@@ -1663,7 +2275,7 @@ class SensorGUI:
                 self.show_success_popup(f"Sensor {sensor_id} Updated")
                 popup.destroy()
             except Exception as e:
-                messagebox.showerror("Invalid Input", str(e))
+                self.show_error("Invalid Input", str(e))
 
         tk.Button(container, text="Submit", command=save_ro_alarm_settings).pack(pady=20)
         tk.Button(
@@ -1678,7 +2290,8 @@ class SensorGUI:
                  text="Tare Level (Zero mmWG)",
                  command=lambda win=popup: self.tare_sensor("C", win)
         ).pack(pady=8)
-        
+        tk.Button(container, text="Data Logging", command=lambda: (popup.destroy(), self.open_data_logging_popup())).pack(pady=10)
+
         tk.Button(container, text="Graphics", command=lambda: (popup.destroy(), self.open_graphics_popup())).pack(pady=10)
 
         if self.visual_settings.get("dark_mode"):
@@ -1814,7 +2427,7 @@ class SensorGUI:
                 self.show_success_popup(f"Sensor {sensor_id} Updated")
                 popup.destroy()
             except Exception as e:
-                messagebox.showerror("Invalid Input", str(e))
+                self.show_error("Invalid Input", str(e))
 
         tk.Button(container, text="Submit", command=save_ph_settings).pack(pady=20)
         tk.Button(
@@ -1823,6 +2436,8 @@ class SensorGUI:
             state=tk.NORMAL if self.sensors.get(sensor_id, {}).get("is_running") else tk.DISABLED,
             command=lambda: (self.reset_sensor(sensor_id), popup.destroy())
         ).pack(pady=10)
+        tk.Button(container, text="Data Logging", command=lambda: (popup.destroy(), self.open_data_logging_popup())).pack(pady=10)
+
         tk.Button(container, text="Graphics", command=lambda: (popup.destroy(), self.open_graphics_popup())).pack(pady=10)
 
         if self.visual_settings.get("dark_mode"):
@@ -1992,9 +2607,9 @@ class SensorGUI:
                 popup.destroy()
 
             except ValueError as e:
-                messagebox.showerror("Invalid Input", str(e))
+                self.show_error("Invalid Input", str(e))
             except Exception as e:
-                messagebox.showerror("Error", f"Failed to save settings: {e}")
+                self.show_error("Error", f"Failed to save settings: {e}")
 
         tk.Button(container, text="Submit", command=save_tds_settings).pack(pady=20)
         tk.Button(
@@ -2003,6 +2618,8 @@ class SensorGUI:
             state=tk.NORMAL if self.sensors.get(sensor_id, {}).get("is_running") else tk.DISABLED,
             command=lambda: (self.reset_sensor(sensor_id), popup.destroy())
         ).pack(pady=10)
+        tk.Button(container, text="Data Logging", command=lambda: (popup.destroy(), self.open_data_logging_popup())).pack(pady=10)
+
         tk.Button(container, text="Graphics", command=lambda: (popup.destroy(), self.open_graphics_popup())).pack(pady=10)
 
         # Apply dark mode styling after successful build
@@ -2129,6 +2746,20 @@ class SensorGUI:
         create_color_picker_section("Conductivity Reading Color", "cond")
         create_color_picker_section("Salinity Reading Color", "sal")
         
+        # Image selection (Frame B only)
+        available_images = self.get_available_images()
+        self.image_frame_b_var = tk.StringVar(value=self.visual_settings.get("image_frame_b_file", "image2.png"))
+        tk.Label(container, text="Change Image In Frame", font=("Arial", 12, "bold")).pack(pady=(25, 5))
+        self.image_frame_b_combo = ttk.Combobox(
+            container,
+            textvariable=self.image_frame_b_var,
+            values=available_images,
+            state="readonly"
+        )
+        self.image_frame_b_combo.pack(pady=5)
+        if available_images and self.image_frame_b_var.get() not in available_images:
+            self.image_frame_b_var.set(available_images[0])
+
         # User Adjustable Frames
         layout_box = tk.LabelFrame(container, text="Frame Layout (Positions)")
         layout_box.pack(fill="x", padx=12, pady=(30, 10))
@@ -2203,7 +2834,13 @@ class SensorGUI:
                     "sal": self.color_vars["sal"].get(),
                 }
             })
-            
+            # Save image selection (Frame B) and refresh that frame immediately
+            try:
+                self.visual_settings["image_frame_b_file"] = self.image_frame_b_var.get()
+                self.refresh_image_frame_b()
+            except Exception:
+                pass
+          
             # Apply frame layout choices
             self.use_frame_positions = use_positions_var.get()
 
@@ -2435,7 +3072,7 @@ class SensorGUI:
             popup.bind("<Escape>", lambda e: popup.destroy())
             popup.wait_window()
         else:
-            messagebox.showinfo("Success", message)
+            self.show_info("Success", message)
            
     def update_all_pump_status_colors(self):
         for pump_name, frame in [("RO Pump A", self.pump_frame_a), ("RO Pump B", self.pump_frame_b)]:
@@ -2655,6 +3292,7 @@ class SensorGUI:
             except Exception as e:
                 print(f"[QUERY ERR] {sensor_id} {cmd}: {e}")
                 return ""
+            
     # Update Sensor Firmware Settings Menu Display    
     def update_sensor_firmware(self, sensor_id: str):
         """
@@ -2696,7 +3334,7 @@ class SensorGUI:
             wl = float(str(resp).replace("mmWG","").replace("mBar","").strip())
         except Exception:
             from tkinter import messagebox
-            messagebox.showerror("Tare Failed", f"Could not read a valid level from Sensor {sensor_id}.")
+            self.show_error("Tare Failed", f"Could not read a valid level from Sensor {sensor_id}.")
             return
 
         # Save offset so (raw + offset) == 0
@@ -2810,6 +3448,13 @@ class SensorGUI:
                     temperature = _txrx(port, "RX201", settle=0.10, timeout_s=3.0)
                     water_level = _txrx(port, "RX203", settle=0.00, timeout_s=3.0)
 
+                    # Cache latest readings for Data Logging
+                    self.cached_readings["A"] = {
+                        "connected": True,
+                        "temp_c": safe_parse_float(temperature),
+                        "water_mmwg": safe_parse_float(water_level),
+                    }
+
                     self.safe_gui_update(lambda: self.update_sensor_ui(
                         self.aquarium_frame_1, temperature, water_level, None, None, None
                     ))
@@ -2823,6 +3468,13 @@ class SensorGUI:
                 elif sensor_id == "B":
                     temperature = _txrx(port, "RX201", settle=0.10, timeout_s=3.0)
                     water_level = _txrx(port, "RX203", settle=0.00, timeout_s=3.0)
+
+                    # Cache latest readings for Data Logging
+                    self.cached_readings["A"] = {
+                        "connected": True,
+                        "temp_c": safe_parse_float(temperature),
+                        "water_mmwg": safe_parse_float(water_level),
+                    }
 
                     self.safe_gui_update(lambda: self.update_sensor_ui(
                         self.aquarium_frame_2, temperature, water_level, None, None, None
@@ -2845,6 +3497,13 @@ class SensorGUI:
 
                     water_level = _txrx(port, "RX203", settle=0.00, timeout_s=3.0)
 
+                    # Cache latest readings for Data Logging
+                    self.cached_readings["A"] = {
+                        "connected": True,
+                        "temp_c": safe_parse_float(temperature),
+                        "water_mmwg": safe_parse_float(water_level),
+                    }
+
                     self.safe_gui_update(lambda: self.update_sensor_ui(
                         self.ro_tank_frame, temperature, water_level, None, None, None
                     ))
@@ -2860,6 +3519,13 @@ class SensorGUI:
                     temperature = _txrx(port, "RX201", settle=0.20, timeout_s=3.0)
                     ph_level    = _txrx(port, "RX205", settle=0.00, timeout_s=4.0)
 
+                    # Cache latest readings for Data Logging
+                    self.cached_readings["D"] = {
+                        "connected": True,
+                        "temp_c": safe_parse_float(temperature),
+                        "ph": safe_parse_float(ph_level),
+                    }
+
                     self.safe_gui_update(lambda: self.update_sensor_ui(
                         self.ph_level_frame, temperature, None, ph_level, None, None, None
                     ))
@@ -2872,6 +3538,15 @@ class SensorGUI:
                     cond_uScm_level  = _txrx(port, "RX206", settle=0.00, timeout_s=4.0)   # µS/cm (string)
                     tds_level        = _txrx(port, "RX207", settle=0.00, timeout_s=4.0)   # ppm (string)
                     sal_level        = _txrx(port, "RX208", settle=0.00, timeout_s=4.0)   # PSU ≈ ppt (string)
+
+                    # Cache latest readings for Data Logging
+                    self.cached_readings["E"] = {
+                        "connected": True,
+                        "temp_c": safe_parse_float(temperature),
+                        "tds_ppm": safe_parse_float(tds_level),
+                        "cond_uScm": safe_parse_float(cond_uScm_level),
+                        "sal_psu": safe_parse_float(sal_level),
+                    }
 
                     # Normalize text
                     def good(x): return bool(x) and x not in ("ERR", "--")
@@ -3234,7 +3909,7 @@ class SensorGUI:
             t.write("r\n")
         except Exception as e:
             print(f"Exception: {e}")
-            self.root.after(0, lambda: messagebox.showerror("Error", f"Failed to reset sensor {sensor_id}: {e}"))
+            self.root.after(0, lambda: self.show_error("Error", f"Failed to reset sensor {sensor_id}: {e}"))
 
     def check_ro_tank_alarm(self, sensor_id, wl_mmwg):
         """
