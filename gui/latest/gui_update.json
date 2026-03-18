@@ -1,11 +1,11 @@
 {
   "product": "SAM-Max",
   "channel": "stable",
-  "latest_version": "1.4.5",
+  "latest_version": "1.4.6",
   "files": {
     "SAM-Max.py": {
       "url": "https://raw.githubusercontent.com/Stork-Solutions/Aquatics-Monitor/main/gui/latest/SAM-Max.py",
-      "sha256": "DB8CD3BDE293B324CF66B8D4196A3874E0124FA7F5CB37334E502ECF80562F98"
+      "sha256": "E8A955B7B0A664006825779C4B933AE62B2C2D53F72A18998ECFC7300540999B"
     }
   },
   "min_supported_version": "1.4.0",
